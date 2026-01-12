@@ -31,9 +31,11 @@ class TrainConfig:
     # Training
     seed: int = 42
     batch_size: int = 32
+    #original learning rate
+    # lr: float = 3e-4
     lr: float = 3e-4
     weight_decay: float = 1e-4
-    max_epochs: int = 80
+    max_epochs: int = 300
     patience: int = 12
 
     # Physics penalties (optional)

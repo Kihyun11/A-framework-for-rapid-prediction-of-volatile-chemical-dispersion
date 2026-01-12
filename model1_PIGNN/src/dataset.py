@@ -86,8 +86,8 @@ class ChemThetaDataset(Dataset):
 
         graph, _ = smiles_to_pyg(smiles)
 
-        u = torch.tensor(self.u[idx], dtype=torch.float)  # [phys_dim]
-        y = torch.tensor(self.y[idx], dtype=torch.float)  # [k_theta]
+        u = torch.tensor(self.u[idx], dtype=torch.float).unsqueeze(0)  # [phys_dim]
+        y = torch.tensor(self.y[idx], dtype=torch.float).unsqueeze(0)  # [k_theta]
 
         graph.u = u
         graph.y = y

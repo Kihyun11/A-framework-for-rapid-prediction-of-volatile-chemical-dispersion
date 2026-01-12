@@ -23,6 +23,26 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def normalize_y_shape(batch_y: torch.Tensor) -> torch.Tensor:
+    """
+    Ensure batch.y becomes [B, k_theta].
+
+    Common cases:
+      - [B, k_theta]      -> OK
+      - [B, 1, k_theta]   -> squeeze(1)
+      - [k_theta]         -> [1, k_theta] (single graph)
+    """
+    y = batch_y
+    if y.dim() == 1:
+        # single graph
+        y = y.unsqueeze(0)
+    elif y.dim() == 3 and y.size(1) == 1:
+        y = y.squeeze(1)
+    elif y.dim() != 2:
+        raise RuntimeError(f"Unsupported batch.y shape: {tuple(y.shape)}; expected [B,k] or [B,1,k].")
+    return y
+
+
 @torch.no_grad()
 def evaluate(model: PIGNN, loader: DataLoader, device: torch.device) -> float:
     model.eval()
@@ -30,7 +50,8 @@ def evaluate(model: PIGNN, loader: DataLoader, device: torch.device) -> float:
     for batch in loader:
         batch = batch.to(device)
         out = model(batch)
-        loss = mse_loss(out.theta_pred, batch.y)
+        y = normalize_y_shape(batch.y)
+        loss = mse_loss(out.theta_pred, y)
         losses.append(loss.item())
     return float(np.mean(losses)) if losses else 1e9
 
@@ -54,7 +75,7 @@ def main() -> None:
         scalar_cols=cfg.scalar_cols,
     )
 
-    # Load splits
+    # Load splits (YOU must create these files)
     splits_path = cfg.data_dir / cfg.splits_dir
     train_ids = read_split_ids(splits_path / "train.txt")
     val_ids = read_split_ids(splits_path / "val.txt")
@@ -62,10 +83,14 @@ def main() -> None:
 
     # Build datasets (fit scalers on train only)
     train_ds = ChemThetaDataset(master_df, targets_df, schema, train_ids)
-    val_ds = ChemThetaDataset(master_df, targets_df, schema, val_ids,
-                              scaler_u=train_ds.scaler_u, scaler_y=train_ds.scaler_y)
-    test_ds = ChemThetaDataset(master_df, targets_df, schema, test_ids,
-                               scaler_u=train_ds.scaler_u, scaler_y=train_ds.scaler_y)
+    val_ds = ChemThetaDataset(
+        master_df, targets_df, schema, val_ids,
+        scaler_u=train_ds.scaler_u, scaler_y=train_ds.scaler_y
+    )
+    test_ds = ChemThetaDataset(
+        master_df, targets_df, schema, test_ids,
+        scaler_u=train_ds.scaler_u, scaler_y=train_ds.scaler_y
+    )
 
     train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False)
@@ -74,8 +99,10 @@ def main() -> None:
     # Infer dims from one sample
     sample = train_ds.get(0)
     node_dim = sample.x.size(-1)
-    phys_dim = sample.u.numel()
-    k_theta = sample.y.numel()
+
+    # IMPORTANT: because dataset stores u as [1, phys_dim] now, sample.u is 2D
+    phys_dim = int(sample.u.size(-1))
+    k_theta = int(sample.y.size(-1))
 
     model = PIGNN(
         node_dim=node_dim,
@@ -95,7 +122,7 @@ def main() -> None:
     best_path = out_dir / "best_model.pt"
     patience_left = cfg.patience
 
-    # Save schema/scalers info for inference
+    # Save meta (for inference)
     meta = {
         "id_col": cfg.id_col,
         "smiles_col": cfg.smiles_col,
@@ -113,7 +140,7 @@ def main() -> None:
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    # Save scalers (simple JSON for mean/std)
+    # Save scalers (mean/std) for de-standardizing in inference
     scaler_payload = {
         "u_mean": train_ds.scaler_u.mean_.tolist(),
         "u_scale": train_ds.scaler_u.scale_.tolist(),
@@ -122,6 +149,7 @@ def main() -> None:
     }
     (out_dir / "scalers.json").write_text(json.dumps(scaler_payload, indent=2), encoding="utf-8")
 
+    # Training loop
     for epoch in range(1, cfg.max_epochs + 1):
         model.train()
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{cfg.max_epochs}", leave=False)
@@ -133,9 +161,10 @@ def main() -> None:
             opt.zero_grad(set_to_none=True)
             out = model(batch)
 
-            loss = mse_loss(out.theta_pred, batch.y)
+            y = normalize_y_shape(batch.y)
+            loss = mse_loss(out.theta_pred, y)
 
-            # Optional physics penalty: non-negativity in standardized space can still help
+            # Optional physics penalty (works in standardized space too)
             if cfg.lambda_nonneg > 0:
                 loss = loss + cfg.lambda_nonneg * nonneg_penalty(out.theta_pred)
 
@@ -144,26 +173,26 @@ def main() -> None:
             opt.step()
 
             train_losses.append(loss.item())
-            pbar.set_postfix({"loss": np.mean(train_losses)})
+            pbar.set_postfix({"loss": float(np.mean(train_losses))})
 
         val_loss = evaluate(model, val_loader, device)
-        print(f"[Epoch {epoch}] train={np.mean(train_losses):.5f}  val={val_loss:.5f}")
+        print(f"[Epoch {epoch}] train={np.mean(train_losses):.6f}  val={val_loss:.6f}")
 
-        if val_loss < best_val - 1e-6:
+        if val_loss < best_val - 1e-8:
             best_val = val_loss
             patience_left = cfg.patience
             torch.save({"state_dict": model.state_dict()}, best_path)
         else:
             patience_left -= 1
-            if patience_left <= 0:
-                print("Early stopping.")
-                break
+            # if patience_left <= 0:
+            #     print("Early stopping.")
+            #     break
 
-    # Final test
+    # Final test with best checkpoint
     ckpt = torch.load(best_path, map_location=device)
     model.load_state_dict(ckpt["state_dict"])
     test_loss = evaluate(model, test_loader, device)
-    print(f"Best val={best_val:.5f} | test={test_loss:.5f}")
+    print(f"Best val={best_val:.6f} | test={test_loss:.6f}")
     print(f"Saved: {best_path}")
 
 

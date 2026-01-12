@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,6 +15,15 @@ class ModelOutput:
 
 
 class PIGNN(nn.Module):
+    """
+    Physics-Informed GNN for chemical -> theta prediction.
+
+    Expects PyG Batch with:
+      - x, edge_index, batch
+      - u: graph-level scalar features
+      - y: graph-level targets (used in train.py only)
+    """
+
     def __init__(
         self,
         node_dim: int,
@@ -25,7 +32,7 @@ class PIGNN(nn.Module):
         gnn_layers: int = 5,
         mlp_hidden: int = 256,
         z_dim: int = 128,
-        k_theta: int = 5,
+        k_theta: int = 1,
         dropout: float = 0.1,
         pool: str = "mean",  # mean/add/max
     ):
@@ -35,13 +42,16 @@ class PIGNN(nn.Module):
             raise ValueError(f"Invalid pool={pool}")
 
         self.pool = pool
+        self.phys_dim = phys_dim
 
+        # Encode node features to hidden dim
         self.node_encoder = nn.Sequential(
             nn.Linear(node_dim, gnn_hidden),
             nn.LayerNorm(gnn_hidden),
             nn.SiLU(),
         )
 
+        # Message passing stack (GIN)
         self.convs = nn.ModuleList()
         self.bns = nn.ModuleList()
         for _ in range(gnn_layers):
@@ -53,6 +63,7 @@ class PIGNN(nn.Module):
             self.convs.append(GINConv(nn_mlp))
             self.bns.append(nn.BatchNorm1d(gnn_hidden))
 
+        # Encode scalar physchem features
         self.phys_encoder = nn.Sequential(
             nn.Linear(phys_dim, gnn_hidden),
             nn.LayerNorm(gnn_hidden),
@@ -60,6 +71,7 @@ class PIGNN(nn.Module):
             nn.Dropout(dropout),
         )
 
+        # Fuse graph + scalar encodings
         fusion_in = gnn_hidden * 2
         self.fusion = nn.Sequential(
             nn.Linear(fusion_in, mlp_hidden),
@@ -71,6 +83,7 @@ class PIGNN(nn.Module):
             nn.SiLU(),
         )
 
+        # Heads
         self.theta_head = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(mlp_hidden, k_theta),
@@ -87,10 +100,53 @@ class PIGNN(nn.Module):
             return global_add_pool(x, batch)
         return global_max_pool(x, batch)
 
-    def forward(self, data: Data) -> ModelOutput:
-        if not hasattr(data, "u"):
-            raise ValueError("Data must contain graph-level scalar features `data.u` of shape [B, phys_dim].")
+    def _normalize_u_shape(self, data: Data) -> torch.Tensor:
+        """
+        Make sure data.u becomes [B, phys_dim].
 
+        Common cases:
+          - [B, phys_dim]        -> OK
+          - [B, 1, phys_dim]     -> squeeze(1)
+          - [phys_dim]           -> [1, phys_dim]
+          - [B*phys_dim]         -> ambiguous; likely PyG concatenation bug if stored 1D per sample
+        """
+        if not hasattr(data, "u"):
+            raise ValueError("Batch must contain graph-level scalar features `data.u`.")
+
+        u = data.u
+
+        # Case: single graph inference might produce [phys_dim]
+        if u.dim() == 1:
+            if u.numel() == self.phys_dim:
+                u = u.view(1, self.phys_dim)
+            else:
+                raise RuntimeError(
+                    f"`data.u` is 1D with length {u.numel()}, expected phys_dim={self.phys_dim}. "
+                    "Likely batching/featurization issue."
+                )
+
+        # Case: [B, 1, phys_dim]
+        if u.dim() == 3 and u.size(1) == 1:
+            u = u.squeeze(1)
+
+        # Case: correct [B, phys_dim]
+        if u.dim() == 2:
+            if u.size(-1) != self.phys_dim:
+                # Often happens when u got concatenated to [1, B*phys_dim]
+                raise RuntimeError(
+                    f"`data.u` has shape {tuple(u.shape)} but expected last dim phys_dim={self.phys_dim}. "
+                    "This usually happens if you stored u as 1D per-sample and PyG concatenated it. "
+                    "Fix: in dataset.py, set `graph.u = u.unsqueeze(0)` so each sample stores [1, phys_dim]."
+                )
+            return u
+
+        raise RuntimeError(
+            f"Unsupported `data.u` shape: {tuple(u.shape)}. "
+            "Expected [B, phys_dim] (or [B,1,phys_dim]/[phys_dim])."
+        )
+
+    def forward(self, data: Data) -> ModelOutput:
+        # Graph pathway
         x = self.node_encoder(data.x)
         for conv, bn in zip(self.convs, self.bns):
             x = conv(x, data.edge_index)
@@ -98,11 +154,15 @@ class PIGNN(nn.Module):
             x = F.silu(x)
 
         h_graph = self._pool(x, data.batch)  # [B, gnn_hidden]
-        h_phys = self.phys_encoder(data.u)   # [B, gnn_hidden]
 
+        # Scalar pathway
+        u = self._normalize_u_shape(data)     # [B, phys_dim]
+        h_phys = self.phys_encoder(u)         # [B, gnn_hidden]
+
+        # Fusion
         h = torch.cat([h_graph, h_phys], dim=-1)
         h = self.fusion(h)
 
-        theta_pred = self.theta_head(h)
-        z_chem = self.z_head(h)
+        theta_pred = self.theta_head(h)       # [B, k_theta]
+        z_chem = self.z_head(h)               # [B, z_dim]
         return ModelOutput(theta_pred=theta_pred, z_chem=z_chem)
