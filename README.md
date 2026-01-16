@@ -53,11 +53,11 @@ model1_PIGNN/
 │ ├─ val.txt
 │ └─ test.txt
 └─ src/
-├─ config.py
-├─ featurize.py
-├─ dataset.py
-├─ model.py
-├─ losses.py
-├─ train.py
-└─ infer.py
+| ├─ config.py
+│ ├─ featurize.py
+│ ├─ dataset.py
+│ ├─ model.py
+│ ├─ losses.py
+│ ├─ train.py
+│ └─ infer.py
 ```
