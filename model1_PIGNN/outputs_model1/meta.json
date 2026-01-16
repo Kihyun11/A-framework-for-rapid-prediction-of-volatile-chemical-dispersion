@@ -8,8 +8,8 @@
   "theta_cols": [
     "theta_log_Psat"
   ],
-  "node_dim": 12,
-  "phys_dim": 2,
+  "node_dim": 50,
+  "phys_dim": 4,
   "k_theta": 1,
   "z_dim": 128,
   "pool": "mean",
