@@ -42,6 +42,7 @@ The PI-GNN model aims to:
 ---
 
 ## Project Structure
+```
 model1_PIGNN/
 ├─ requirements.txt
 ├─ data/
@@ -59,3 +60,4 @@ model1_PIGNN/
 ├─ losses.py
 ├─ train.py
 └─ infer.py
+```
