@@ -135,7 +135,7 @@ class DemoApp:
         ttk.Entry(frm, textvariable=self.smiles_var, width=40).grid(row=0, column=1, sticky="ew", pady=4)
 
         # M
-        ttk.Label(frm, text="M (molar mass)").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Label(frm, text="M (Molar Mass)").grid(row=1, column=0, sticky="w", pady=4)
         self.m_var = tk.StringVar(value="46.07")
         ttk.Entry(frm, textvariable=self.m_var, width=20).grid(row=1, column=1, sticky="w", pady=4)
 
