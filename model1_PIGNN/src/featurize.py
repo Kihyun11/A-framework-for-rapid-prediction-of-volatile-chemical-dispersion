@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from rdkit.Chem import Descriptors
 from typing import Dict, List, Tuple, Optional
 
 import numpy as np
@@ -371,10 +371,13 @@ def smiles_to_pyg(
         edge_index_t = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
         edge_attr_t = torch.tensor(np.stack(edge_attr, axis=0), dtype=torch.float32)
 
+
+    
     # Graph-level descriptors
     logp = float(Crippen.MolLogP(mol))
     tpsa = float(rdMolDescriptors.CalcTPSA(mol))
-    g = torch.tensor([logp, tpsa], dtype=torch.float32)  # [2]
+    molwt = float(Descriptors.MolWt(mol))  # ✅ NEW
+    g = torch.tensor([logp, tpsa, molwt], dtype=torch.float32)  # [3]
 
     data = Data(x=x, edge_index=edge_index_t, edge_attr=edge_attr_t)
     data.g = g  # graph-level feature vector

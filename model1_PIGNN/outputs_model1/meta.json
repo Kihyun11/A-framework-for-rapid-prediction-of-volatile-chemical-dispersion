@@ -2,7 +2,6 @@
   "id_col": "chem_id",
   "smiles_col": "smiles",
   "scalar_cols": [
-    "M",
     "T"
   ],
   "theta_cols": [
