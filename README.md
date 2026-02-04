@@ -77,6 +77,6 @@ python make_split.py
 To start the train and demo, run this code
 ```python
 python make_split.py
-Python demo.py
+python demo.py
 ```
 
