@@ -59,5 +59,24 @@ model1_PIGNN/
 │ ├─ model.py
 │ ├─ losses.py
 │ ├─ train.py
+│ ├─ make_split.py
+│ ├─ zero_shot_eval.py
+│ ├─ demo.py
 │ └─ infer.py
 ```
+
+# Dataset preparation
+Prepare chem_master.csv and chem_targets_params.csv which contains the chem_id, SMILES, temperature as inputs and log(Psat) as an output.
+The csv file contains chem_id group 1 (1-69) and group 2 (70-117). The make_split.py automatically allocates the chemicals based on their ids and groups in a ratio of 2 (group1) : 1 (group2) for train, valid and test set.  
+
+```python
+python make_split.py
+```
+
+# Training & Demo
+To start the train and demo, run this code
+```python
+python make_split.py
+Python demo.py
+```
+
